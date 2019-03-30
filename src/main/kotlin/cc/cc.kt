@@ -14,8 +14,7 @@ import jdk.internal.org.objectweb.asm.util.TraceClassVisitor
 import net.lingala.zip4j.core.ZipFile
 import org.objectweb.asm.Opcodes.ASM5
 import java.io.ByteArrayOutputStream
-import java.io.File
-import java.io.FileInputStream
+import java.io.OutputStreamWriter
 import java.io.PrintWriter
 import java.nio.file.*
 import java.nio.file.Files.readAllBytes
@@ -46,11 +45,12 @@ class CC : CliktCommand() {
     val orig: Path = getOrExtract(first)
     val inc: Path = getOrExtract(second)
 
-    val diff = diff.toFile()
-    diff.deleteRecursively()
-    diff.mkdir()
-    val diffClasses = File(diff, "classes")
-    diffClasses.mkdir()
+    if (Files.exists(diff)) {
+      Files.walk(diff).sorted(reverseOrder()).forEach { Files.delete(it) }
+    }
+    Files.createDirectories(diff)
+    val diffClasses = diff.resolve("classes")
+    Files.createDirectory(diffClasses)
 
     val diffClassNames = ArrayList<String>()
     var allFiles = 0
@@ -73,22 +73,22 @@ class CC : CliktCommand() {
         if (compareClasses && classMatcher.matches(fileName)) {
           classFiles++
 
-          if (!inInc.toFile().exists()) tc("M $inInc")
+          if (!Files.exists(inInc)) tc("M $inInc")
           else {
             val o = decompile(path, compareMethodBodies, ignoreLineNumbers)
             val s = decompile(inInc, compareMethodBodies, ignoreLineNumbers)
             if (sortAndTrim(o) != sortAndTrim(s)) {
               val fn = fileName.toString()
               diffClassNames.add(fn)
-              File(diff, "$fn.o.txt").writeText(o)
-              File(diff, "$fn.i.txt").writeText(s)
-              path.toFile().copyTo(File(diffClasses, "$fn.o.class"))
-              inInc.toFile().copyTo(File(diffClasses, "$fn.i.class"))
+              Files.write(diff.resolve("$fn.o.txt"), Collections.singleton(o))
+              Files.write(diff.resolve("$fn.i.txt"), Collections.singleton(s))
+              Files.copy(path, diffClasses.resolve("$fn.o.class"))
+              Files.copy(inInc, diffClasses.resolve("$fn.i.class"))
               tc("D $inInc")
             }
           }
         } else if (compareOther) {
-          if (!inInc.toFile().exists()) tc("M $inInc")
+          if (!Files.exists(inInc)) tc("M $inInc")
           else if (!Arrays.equals(readAllBytes(path), readAllBytes(inInc))) tc("D $inInc")
         }
 
@@ -152,8 +152,8 @@ private fun status(message: Any?, status: String? = null) {
       else "##teamcity[buildStatus text='$message' status='$status']")
 }
 
-private fun decompile(path: Path?, compareMethodBodies: Boolean, ignoreLineNumbers: Boolean): String {
-  FileInputStream(path?.toFile()).use { fileInputStream ->
+private fun decompile(path: Path, compareMethodBodies: Boolean, ignoreLineNumbers: Boolean): String {
+  Files.newInputStream(path).use { fileInputStream ->
     try {
       val classReader = ClassReader(fileInputStream)
       val byteArrayOutputStream = ByteArrayOutputStream()
@@ -176,9 +176,9 @@ private fun decompile(path: Path?, compareMethodBodies: Boolean, ignoreLineNumbe
 
         override fun visitInnerClass(p0: String?, p1: String?, p2: String?, p3: Int) { // don't print public static abstract INNERCLASS *
         }
-      }, PrintWriter(byteArrayOutputStream))
+      }, PrintWriter(OutputStreamWriter(byteArrayOutputStream, Charsets.UTF_8)))
       classReader.accept(traceClassVisitor, ClassReader.SKIP_DEBUG and ClassReader.SKIP_CODE and ClassReader.SKIP_FRAMES)
-      return byteArrayOutputStream.toString()
+      return byteArrayOutputStream.toString(Charsets.UTF_8.toString())
     }
     catch(e: Exception) {
       println(e.message)
